@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_ssl_verify: bool = True
 
+    # Cloud ID — auto-resolved from _edge/tenant_info if not set
+    jira_cloud_id: str = ""
+
     # MCP transport
     mcp_transport: str = "stdio"
     mcp_host: str = "0.0.0.0"
