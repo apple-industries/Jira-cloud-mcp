@@ -1,7 +1,7 @@
 """HTTP client for Jira Cloud REST API v3."""
 
 import asyncio
-import time
+import sys
 
 import httpx
 
@@ -15,6 +15,7 @@ class JiraCloudClient:
         self._client: httpx.AsyncClient | None = None
         self._rate_limit_remaining: int = 100
         self._rate_limit_reset: float = 0
+        self._cloud_id: str = settings.jira_cloud_id
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -41,6 +42,37 @@ class JiraCloudClient:
             await asyncio.sleep(wait)
             return True  # Should retry
         return False
+
+    # --- Cloud ID resolution ---
+
+    async def get_cloud_id(self) -> str:
+        """Resolve and cache the Jira Cloud ID.
+
+        Uses JIRA_CLOUD_ID env var if set, otherwise fetches from
+        the _edge/tenant_info endpoint.
+        """
+        if self._cloud_id:
+            return self._cloud_id
+
+        url = f"{settings.jira_url.rstrip('/')}/_edge/tenant_info"
+        try:
+            resp = await self.client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            self._cloud_id = data.get("cloudId", "")
+            if not self._cloud_id:
+                print(
+                    "Warning: Could not resolve cloudId from tenant_info. "
+                    "Set JIRA_CLOUD_ID in your .env file.",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(
+                f"Warning: Failed to resolve cloudId: {exc}. "
+                f"Set JIRA_CLOUD_ID in your .env file.",
+                file=sys.stderr,
+            )
+        return self._cloud_id
 
     # --- Core HTTP methods ---
 
@@ -115,6 +147,43 @@ class JiraCloudClient:
         resp = await self.client.delete(full_url)
         resp.raise_for_status()
         return True
+
+    # --- Automation API (internal gateway) ---
+
+    async def _automation_url(self, scope: str, path: str = "") -> str:
+        """Build the internal gateway automation URL.
+
+        Args:
+            scope: 'GLOBAL' for site-wide rules, or a project ID for
+                   project-scoped rules.
+            path: optional trailing path (e.g. '/<rule_id>')
+        """
+        cloud_id = await self.get_cloud_id()
+        if not cloud_id:
+            raise RuntimeError(
+                "Cloud ID not available. Set JIRA_CLOUD_ID in .env or "
+                "ensure _edge/tenant_info is accessible."
+            )
+        base = settings.jira_url.rstrip("/")
+        return (
+            f"{base}/gateway/api/automation/internal-api/jira/"
+            f"{cloud_id}/pro/rest/{scope}/rules{path}"
+        )
+
+    async def automation_get(self, scope: str, path: str = "", **params) -> dict | list:
+        """GET from the automation internal API."""
+        url = await self._automation_url(scope, path)
+        params = {k: v for k, v in params.items() if v is not None and v != ""}
+        resp = await self.client.get(url, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def automation_put(self, scope: str, path: str = "", body: dict | None = None) -> dict:
+        """PUT to the automation internal API."""
+        url = await self._automation_url(scope, path)
+        resp = await self.client.put(url, json=body or {})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
 
     async def close(self):
         if self._client and not self._client.is_closed:
