@@ -148,15 +148,13 @@ class JiraCloudClient:
         resp.raise_for_status()
         return True
 
-    # --- Automation API (internal gateway) ---
+    # --- Automation API (public gateway) ---
 
-    async def _automation_url(self, scope: str, path: str = "") -> str:
-        """Build the internal gateway automation URL.
+    async def _automation_base_url(self) -> str:
+        """Build the public automation API base URL.
 
-        Args:
-            scope: 'GLOBAL' for site-wide rules, or a project ID for
-                   project-scoped rules.
-            path: optional trailing path (e.g. '/<rule_id>')
+        Uses the gateway proxy:
+          {jira_url}/gateway/api/automation/public/jira/{cloudId}/rest/v1
         """
         cloud_id = await self.get_cloud_id()
         if not cloud_id:
@@ -166,21 +164,31 @@ class JiraCloudClient:
             )
         base = settings.jira_url.rstrip("/")
         return (
-            f"{base}/gateway/api/automation/internal-api/jira/"
-            f"{cloud_id}/pro/rest/{scope}/rules{path}"
+            f"{base}/gateway/api/automation/public/jira/"
+            f"{cloud_id}/rest/v1"
         )
 
-    async def automation_get(self, scope: str, path: str = "", **params) -> dict | list:
-        """GET from the automation internal API."""
-        url = await self._automation_url(scope, path)
+    async def automation_get(self, path: str = "", **params) -> dict | list:
+        """GET from the automation public API."""
+        base_url = await self._automation_base_url()
+        url = f"{base_url}{path}"
         params = {k: v for k, v in params.items() if v is not None and v != ""}
         resp = await self.client.get(url, params=params)
         resp.raise_for_status()
         return resp.json()
 
-    async def automation_put(self, scope: str, path: str = "", body: dict | None = None) -> dict:
-        """PUT to the automation internal API."""
-        url = await self._automation_url(scope, path)
+    async def automation_post(self, path: str = "", body: dict | None = None) -> dict | list:
+        """POST to the automation public API."""
+        base_url = await self._automation_base_url()
+        url = f"{base_url}{path}"
+        resp = await self.client.post(url, json=body or {})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def automation_put(self, path: str = "", body: dict | None = None) -> dict:
+        """PUT to the automation public API."""
+        base_url = await self._automation_base_url()
+        url = f"{base_url}{path}"
         resp = await self.client.put(url, json=body or {})
         resp.raise_for_status()
         return resp.json() if resp.content else {}
