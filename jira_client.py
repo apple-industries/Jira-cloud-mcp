@@ -185,6 +185,20 @@ class JiraCloudClient:
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
+    async def automation_post(self, scope: str, path: str = "", body: dict | None = None) -> dict:
+        """POST to the automation internal API (e.g. create a rule via '/import')."""
+        url = await self._automation_url(scope, path)
+        resp = await self.client.post(url, json=body or {})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def automation_delete(self, scope: str, path: str = "") -> bool:
+        """DELETE a rule via the automation internal API (path e.g. '/<rule_id>')."""
+        url = await self._automation_url(scope, path)
+        resp = await self.client.delete(url)
+        resp.raise_for_status()
+        return True
+
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
