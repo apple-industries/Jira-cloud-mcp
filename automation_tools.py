@@ -52,24 +52,38 @@ def register_automation_tools(mcp, client: JiraCloudClient):
 
     @mcp.tool()
     async def create_automation_rule(
-        rule_json: str, project_key: str = "", path: str = "/import"
+        rule_json: str = "", rule_file: str = "", project_key: str = "", path: str = "/import"
     ) -> str:
         """Create automation rule(s) by POSTing a JSON definition to the internal API.
 
-        rule_json: the rule definition as a JSON string. For the default '/import'
-            endpoint this matches the export format, typically
-            {"rules": [ {<rule>} ], "connections": {...}} (a single-rule export uses
-            {"rule": {...}, "connections": {...}} — wrap it under "rules" for import).
+        Provide exactly one of:
+          rule_json: the rule definition as a JSON string, or
+          rule_file: a path to a .json file containing the rule definition.
+        For the default '/import' endpoint the payload matches the export format. A single
+        rule authored as {"rule": {...}, "connections": {...}} is auto-wrapped to
+        {"rules": [{...}], "connections": {...}} for import.
         project_key: '' creates a GLOBAL rule; otherwise the project scope (e.g. 'PI').
         path: create endpoint on the rules API (default '/import').
 
         Tip: fetch an existing rule with get_automation_rule and adapt it as a template.
         """
         scope = _scope(project_key)
+        raw = rule_json
+        if rule_file:
+            try:
+                with open(rule_file, encoding="utf-8") as fh:
+                    raw = fh.read()
+            except OSError as e:
+                return _fmt({"error": f"cannot read rule_file: {e}"})
+        if not raw.strip():
+            return _fmt({"error": "provide rule_json or rule_file"})
         try:
-            payload = json.loads(rule_json)
+            payload = json.loads(raw)
         except json.JSONDecodeError as e:
-            return _fmt({"error": f"invalid rule_json: {e}"})
+            return _fmt({"error": f"invalid rule JSON: {e}"})
+        # Auto-wrap a single-rule export into the /import 'rules' array shape.
+        if path.endswith("/import") and isinstance(payload, dict) and "rule" in payload and "rules" not in payload:
+            payload = {"rules": [payload["rule"]], "connections": payload.get("connections", {})}
         data = await client.automation_post(scope, path, payload)
         return _fmt(data or {"status": "created", "scope": scope})
 
