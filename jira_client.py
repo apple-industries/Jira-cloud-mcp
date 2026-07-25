@@ -168,33 +168,41 @@ class JiraCloudClient:
             f"{cloud_id}/rest/v1{path}"
         )
 
+    @staticmethod
+    def _check(resp, url: str) -> None:
+        """Raise with the response BODY included (the API's error detail is in the body)."""
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"{resp.status_code} {resp.reason_phrase} at {url}: {resp.text[:2000]}"
+            )
+
     async def automation_get(self, path: str = "", **params) -> dict | list:
         """GET from the public automation API."""
         url = await self._automation_url(path)
         params = {k: v for k, v in params.items() if v is not None and v != ""}
         resp = await self.client.get(url, params=params)
-        resp.raise_for_status()
+        self._check(resp, url)
         return resp.json()
 
     async def automation_post(self, path: str = "", body: dict | None = None) -> dict:
         """POST to the public automation API (e.g. create a rule via '/rule')."""
         url = await self._automation_url(path)
         resp = await self.client.post(url, json=body or {})
-        resp.raise_for_status()
+        self._check(resp, url)
         return resp.json() if resp.content else {}
 
     async def automation_put(self, path: str = "", body: dict | None = None) -> dict:
         """PUT to the public automation API."""
         url = await self._automation_url(path)
         resp = await self.client.put(url, json=body or {})
-        resp.raise_for_status()
+        self._check(resp, url)
         return resp.json() if resp.content else {}
 
     async def automation_delete(self, path: str = "") -> bool:
         """DELETE a rule via the public automation API (path e.g. '/rule/<uuid>')."""
         url = await self._automation_url(path)
         resp = await self.client.delete(url)
-        resp.raise_for_status()
+        self._check(resp, url)
         return True
 
     async def close(self):
