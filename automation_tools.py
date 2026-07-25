@@ -1,10 +1,16 @@
-"""Jira Cloud native automation rules tools.
+"""Jira Cloud automation rules tools.
 
-Uses the internal gateway API that the Jira UI itself calls:
-  /gateway/api/automation/internal-api/jira/{cloudId}/pro/rest/{scope}/rules
+Uses the PUBLIC automation REST API:
+  /gateway/api/automation/public/jira/{cloudId}/rest/v1
 
-This works with basic auth (email:API token) unlike the official
-automation API at api.atlassian.com which requires OAuth 2.0.
+Endpoints:
+  GET    /rule/summary        list rule summaries (cursor-paginated)
+  GET    /rule/{uuid}         get a rule
+  POST   /rule               create a rule from a Rule Payload
+  PUT    /rule/{uuid}/state  enable/disable a rule
+  DELETE /rule/{uuid}         delete a disabled rule
+
+Works with basic auth (email:API token); Forge/OAuth2 apps are excluded.
 """
 
 import json
@@ -15,59 +21,66 @@ def _fmt(data) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)
 
 
-def _scope(project_key: str) -> str:
-    """Return 'GLOBAL' or the project key as the automation scope."""
-    return project_key.strip() if project_key.strip() else "GLOBAL"
-
-
 def register_automation_tools(mcp, client: JiraCloudClient):
 
     @mcp.tool()
     async def list_automation_rules(project_key: str = "") -> str:
-        """List automation rules. If project_key given, list project rules; otherwise global."""
-        scope = _scope(project_key)
-        data = await client.automation_get(scope)
+        """List automation rule summaries (all rules on the site).
+
+        The public API is site-wide (no project scope in the URL). If project_key
+        is given, results are filtered client-side to rules scoped to that project.
+        """
+        out = []
+        path = "/rule/summary"
+        while path:
+            page = await client.automation_get(path)
+            if isinstance(page, dict):
+                out.extend(page.get("data", []))
+                nxt = (page.get("links") or {}).get("next")
+                if not nxt:
+                    break
+                path = ("/rule/summary" + nxt) if nxt.startswith("?") else nxt
+            else:  # non-paginated fallback
+                out.extend(page if isinstance(page, list) else [page])
+                break
+        if project_key.strip():
+            pk = project_key.strip()
+            out = [
+                r for r in out
+                if any(str(p.get("key") or p.get("projectId")) == pk
+                       for p in (r.get("projects") or []))
+            ]
+        return _fmt(out)
+
+    @mcp.tool()
+    async def get_automation_rule(rule_id: str) -> str:
+        """Get an automation rule by UUID — trigger, conditions, actions."""
+        data = await client.automation_get(f"/rule/{rule_id}")
         return _fmt(data)
 
     @mcp.tool()
-    async def get_automation_rule(rule_id: str, project_key: str = "") -> str:
-        """Get automation rule details \u2014 trigger, conditions, actions."""
-        scope = _scope(project_key)
-        data = await client.automation_get(scope, f"/{rule_id}")
-        return _fmt(data)
-
-    @mcp.tool()
-    async def enable_automation_rule(rule_id: str, project_key: str = "") -> str:
+    async def enable_automation_rule(rule_id: str) -> str:
         """Enable an automation rule."""
-        scope = _scope(project_key)
-        data = await client.automation_put(scope, f"/{rule_id}/enable")
-        return _fmt(data or {"status": "enabled", "ruleId": rule_id})
+        data = await client.automation_put(f"/rule/{rule_id}/state", {"state": "ENABLED"})
+        return _fmt(data or {"status": "ENABLED", "ruleId": rule_id})
 
     @mcp.tool()
-    async def disable_automation_rule(rule_id: str, project_key: str = "") -> str:
+    async def disable_automation_rule(rule_id: str) -> str:
         """Disable an automation rule."""
-        scope = _scope(project_key)
-        data = await client.automation_put(scope, f"/{rule_id}/disable")
-        return _fmt(data or {"status": "disabled", "ruleId": rule_id})
+        data = await client.automation_put(f"/rule/{rule_id}/state", {"state": "DISABLED"})
+        return _fmt(data or {"status": "DISABLED", "ruleId": rule_id})
 
     @mcp.tool()
-    async def create_automation_rule(
-        rule_json: str = "", rule_file: str = "", project_key: str = "", path: str = "/import"
-    ) -> str:
-        """Create automation rule(s) by POSTing a JSON definition to the internal API.
+    async def create_automation_rule(rule_json: str = "", rule_file: str = "") -> str:
+        """Create an automation rule via POST /rule (public API).
 
         Provide exactly one of:
-          rule_json: the rule definition as a JSON string, or
-          rule_file: a path to a .json file containing the rule definition.
-        For the default '/import' endpoint the payload matches the export format. A single
-        rule authored as {"rule": {...}, "connections": {...}} is auto-wrapped to
-        {"rules": [{...}], "connections": {...}} for import.
-        project_key: '' creates a GLOBAL rule; otherwise the project scope (e.g. 'PI').
-        path: create endpoint on the rules API (default '/import').
-
-        Tip: fetch an existing rule with get_automation_rule and adapt it as a template.
+          rule_json: the Rule Payload as a JSON string, or
+          rule_file: a path to a .json file containing the Rule Payload.
+        The payload shape matches what GET /rule/{uuid} returns, i.e.
+        {"rule": {...}, "connections": {...}}. Create the rule with
+        "state": "DISABLED" first, then round-trip with get_automation_rule.
         """
-        scope = _scope(project_key)
         raw = rule_json
         if rule_file:
             try:
@@ -81,15 +94,11 @@ def register_automation_tools(mcp, client: JiraCloudClient):
             payload = json.loads(raw)
         except json.JSONDecodeError as e:
             return _fmt({"error": f"invalid rule JSON: {e}"})
-        # Auto-wrap a single-rule export into the /import 'rules' array shape.
-        if path.endswith("/import") and isinstance(payload, dict) and "rule" in payload and "rules" not in payload:
-            payload = {"rules": [payload["rule"]], "connections": payload.get("connections", {})}
-        data = await client.automation_post(scope, path, payload)
-        return _fmt(data or {"status": "created", "scope": scope})
+        data = await client.automation_post("/rule", payload)
+        return _fmt(data or {"status": "created"})
 
     @mcp.tool()
-    async def delete_automation_rule(rule_id: str, project_key: str = "") -> str:
-        """Delete an automation rule by id."""
-        scope = _scope(project_key)
-        await client.automation_delete(scope, f"/{rule_id}")
+    async def delete_automation_rule(rule_id: str) -> str:
+        """Delete a (disabled) automation rule by UUID."""
+        await client.automation_delete(f"/rule/{rule_id}")
         return _fmt({"status": "deleted", "ruleId": rule_id})

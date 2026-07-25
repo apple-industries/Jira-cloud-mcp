@@ -148,16 +148,14 @@ class JiraCloudClient:
         resp.raise_for_status()
         return True
 
-    # --- Automation API (internal gateway) ---
+    # --- Automation API (public gateway) ---
+    # Public REST API: /gateway/api/automation/public/jira/{cloudId}/rest/v1
+    # Endpoints: GET /rule/summary, GET /rule/{uuid}, POST /rule,
+    #            PUT /rule/{uuid}, PUT /rule/{uuid}/state, DELETE /rule/{uuid}.
+    # Works with basic auth (email:token); Forge/OAuth2 apps are excluded.
 
-    async def _automation_url(self, scope: str, path: str = "") -> str:
-        """Build the internal gateway automation URL.
-
-        Args:
-            scope: 'GLOBAL' for site-wide rules, or a project ID for
-                   project-scoped rules.
-            path: optional trailing path (e.g. '/<rule_id>')
-        """
+    async def _automation_url(self, path: str = "") -> str:
+        """Build the public automation API URL (no scope segment)."""
         cloud_id = await self.get_cloud_id()
         if not cloud_id:
             raise RuntimeError(
@@ -166,35 +164,35 @@ class JiraCloudClient:
             )
         base = settings.jira_url.rstrip("/")
         return (
-            f"{base}/gateway/api/automation/internal-api/jira/"
-            f"{cloud_id}/pro/rest/{scope}/rules{path}"
+            f"{base}/gateway/api/automation/public/jira/"
+            f"{cloud_id}/rest/v1{path}"
         )
 
-    async def automation_get(self, scope: str, path: str = "", **params) -> dict | list:
-        """GET from the automation internal API."""
-        url = await self._automation_url(scope, path)
+    async def automation_get(self, path: str = "", **params) -> dict | list:
+        """GET from the public automation API."""
+        url = await self._automation_url(path)
         params = {k: v for k, v in params.items() if v is not None and v != ""}
         resp = await self.client.get(url, params=params)
         resp.raise_for_status()
         return resp.json()
 
-    async def automation_put(self, scope: str, path: str = "", body: dict | None = None) -> dict:
-        """PUT to the automation internal API."""
-        url = await self._automation_url(scope, path)
-        resp = await self.client.put(url, json=body or {})
-        resp.raise_for_status()
-        return resp.json() if resp.content else {}
-
-    async def automation_post(self, scope: str, path: str = "", body: dict | None = None) -> dict:
-        """POST to the automation internal API (e.g. create a rule via '/import')."""
-        url = await self._automation_url(scope, path)
+    async def automation_post(self, path: str = "", body: dict | None = None) -> dict:
+        """POST to the public automation API (e.g. create a rule via '/rule')."""
+        url = await self._automation_url(path)
         resp = await self.client.post(url, json=body or {})
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
-    async def automation_delete(self, scope: str, path: str = "") -> bool:
-        """DELETE a rule via the automation internal API (path e.g. '/<rule_id>')."""
-        url = await self._automation_url(scope, path)
+    async def automation_put(self, path: str = "", body: dict | None = None) -> dict:
+        """PUT to the public automation API."""
+        url = await self._automation_url(path)
+        resp = await self.client.put(url, json=body or {})
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    async def automation_delete(self, path: str = "") -> bool:
+        """DELETE a rule via the public automation API (path e.g. '/rule/<uuid>')."""
+        url = await self._automation_url(path)
         resp = await self.client.delete(url)
         resp.raise_for_status()
         return True
