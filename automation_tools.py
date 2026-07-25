@@ -98,6 +98,31 @@ def register_automation_tools(mcp, client: JiraCloudClient):
         return _fmt(data or {"status": "created"})
 
     @mcp.tool()
+    async def update_automation_rule(rule_id: str, rule_json: str = "", rule_file: str = "") -> str:
+        """Update an existing rule via PUT /rule/{uuid} with a full Rule Payload.
+
+        Provide exactly one of rule_json (JSON string) or rule_file (path). The payload
+        is the same {"rule": {...}, "connections": [...]} shape used by create; it fully
+        replaces the rule, so pass the complete definition (edit the authored file, then
+        update). Round-trip with get_automation_rule afterward.
+        """
+        raw = rule_json
+        if rule_file:
+            try:
+                with open(rule_file, encoding="utf-8") as fh:
+                    raw = fh.read()
+            except OSError as e:
+                return _fmt({"error": f"cannot read rule_file: {e}"})
+        if not raw.strip():
+            return _fmt({"error": "provide rule_json or rule_file"})
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return _fmt({"error": f"invalid rule JSON: {e}"})
+        data = await client.automation_put(f"/rule/{rule_id}", payload)
+        return _fmt(data or {"status": "updated", "ruleId": rule_id})
+
+    @mcp.tool()
     async def delete_automation_rule(rule_id: str) -> str:
         """Delete a (disabled) automation rule by UUID."""
         await client.automation_delete(f"/rule/{rule_id}")
