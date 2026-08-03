@@ -1,6 +1,7 @@
 """HTTP client for Jira Cloud REST API v3."""
 
 import asyncio
+import os
 import sys
 
 import httpx
@@ -16,6 +17,7 @@ class JiraCloudClient:
         self._rate_limit_remaining: int = 100
         self._rate_limit_reset: float = 0
         self._cloud_id: str = settings.jira_cloud_id
+        self._assets_workspace_id: str = ""
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -201,6 +203,60 @@ class JiraCloudClient:
     async def automation_delete(self, path: str = "") -> bool:
         """DELETE a rule via the public automation API (path e.g. '/rule/<uuid>')."""
         url = await self._automation_url(path)
+        resp = await self.client.delete(url)
+        self._check(resp, url)
+        return True
+
+    # --- Assets (JSM) API ---
+    # Separate host: https://api.atlassian.com/jsm/assets/workspace/{workspaceId}/v1
+    # The workspace id is discovered from the site's servicedeskapi. Basic auth
+    # (email:token) — the same credentials the global client already carries — works.
+
+    async def get_assets_workspace_id(self) -> str:
+        """Resolve and cache the Assets workspace id (env ASSETS_WORKSPACE_ID wins)."""
+        if self._assets_workspace_id:
+            return self._assets_workspace_id
+        env = os.environ.get("ASSETS_WORKSPACE_ID", "").strip()
+        if env:
+            self._assets_workspace_id = env
+            return env
+        url = f"{settings.jira_url.rstrip('/')}/rest/servicedeskapi/assets/workspace"
+        resp = await self.client.get(url)
+        self._check(resp, url)
+        vals = (resp.json() or {}).get("values", [])
+        if not vals:
+            raise RuntimeError(
+                "No Assets workspace found. Ensure JSM Assets is enabled and the "
+                "account has access, or set ASSETS_WORKSPACE_ID in .env."
+            )
+        self._assets_workspace_id = vals[0]["workspaceId"]
+        return self._assets_workspace_id
+
+    async def _assets_url(self, path: str) -> str:
+        wsid = await self.get_assets_workspace_id()
+        return f"https://api.atlassian.com/jsm/assets/workspace/{wsid}/v1{path}"
+
+    async def assets_get(self, path: str, **params) -> dict | list:
+        url = await self._assets_url(path)
+        params = {k: v for k, v in params.items() if v is not None and v != ""}
+        resp = await self.client.get(url, params=params)
+        self._check(resp, url)
+        return resp.json() if resp.content else {}
+
+    async def assets_post(self, path: str, body: dict | None = None) -> dict | list:
+        url = await self._assets_url(path)
+        resp = await self.client.post(url, json=body or {})
+        self._check(resp, url)
+        return resp.json() if resp.content else {}
+
+    async def assets_put(self, path: str, body: dict | None = None) -> dict | list:
+        url = await self._assets_url(path)
+        resp = await self.client.put(url, json=body or {})
+        self._check(resp, url)
+        return resp.json() if resp.content else {}
+
+    async def assets_delete(self, path: str) -> bool:
+        url = await self._assets_url(path)
         resp = await self.client.delete(url)
         self._check(resp, url)
         return True

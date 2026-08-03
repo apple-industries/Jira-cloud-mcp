@@ -24,25 +24,41 @@ def _fmt(data) -> str:
 def register_automation_tools(mcp, client: JiraCloudClient):
 
     @mcp.tool()
-    async def list_automation_rules(project_key: str = "") -> str:
+    async def list_automation_rules(project_key: str = "", limit: int = 200) -> str:
         """List automation rule summaries (all rules on the site).
 
         The public API is site-wide (no project scope in the URL). If project_key
         is given, results are filtered client-side to rules scoped to that project.
+
+        Bounded so it can never hang: capped page count, a cursor loop-guard, and a
+        compact projection (id/name/state/projects) instead of full rule bodies.
+        Raise `limit` if you need more than the default 200 rules.
         """
-        out = []
-        path = "/rule/summary"
-        while path:
-            page = await client.automation_get(path)
-            if isinstance(page, dict):
-                out.extend(page.get("data", []))
-                nxt = (page.get("links") or {}).get("next")
-                if not nxt:
-                    break
-                path = ("/rule/summary" + nxt) if nxt.startswith("?") else nxt
-            else:  # non-paginated fallback
+        MAX_PAGES = 100
+        out: list = []
+        cursor: str | None = None       # opaque cursor param, not a rebuilt path
+        seen_cursors: set[str] = set()
+        for _ in range(MAX_PAGES):
+            page = await client.automation_get("/rule/summary",
+                                               **({"cursor": cursor} if cursor else {}))
+            if not isinstance(page, dict):
                 out.extend(page if isinstance(page, list) else [page])
                 break
+            out.extend(page.get("data", []))
+            if len(out) >= limit:
+                break
+            nxt = (page.get("links") or {}).get("next") or page.get("cursor")
+            if not nxt:
+                break
+            # Extract just the cursor token; never rebuild the path (that was the hang).
+            token = nxt
+            if "cursor=" in nxt:
+                token = nxt.split("cursor=", 1)[1].split("&", 1)[0]
+            if not token or token in seen_cursors:  # non-advancing -> stop
+                break
+            seen_cursors.add(token)
+            cursor = token
+
         if project_key.strip():
             pk = project_key.strip()
             out = [
@@ -50,7 +66,19 @@ def register_automation_tools(mcp, client: JiraCloudClient):
                 if any(str(p.get("key") or p.get("projectId")) == pk
                        for p in (r.get("projects") or []))
             ]
-        return _fmt(out)
+        out = out[:limit]
+        # Compact projection keeps the payload small and fast to serialize.
+        compact = [
+            {
+                "id": r.get("id") or r.get("ruleId") or r.get("uuid"),
+                "name": r.get("name"),
+                "state": r.get("state"),
+                "projects": [p.get("key") or p.get("projectId")
+                             for p in (r.get("projects") or [])],
+            }
+            for r in out if isinstance(r, dict)
+        ]
+        return _fmt({"count": len(compact), "rules": compact})
 
     @mcp.tool()
     async def get_automation_rule(rule_id: str) -> str:

@@ -18,6 +18,7 @@ from screen_tools import register_screen_tools
 from user_tools import register_user_tools
 from automation_tools import register_automation_tools
 from admin_tools import register_admin_tools
+from assets_tools import register_assets_tools
 
 mcp = FastMCP(
     "jira-cloud",
@@ -57,6 +58,7 @@ register_screen_tools(mcp, jira)
 register_user_tools(mcp, jira)
 register_automation_tools(mcp, jira)
 register_admin_tools(mcp, jira)
+register_assets_tools(mcp, jira)
 
 
 def main():
