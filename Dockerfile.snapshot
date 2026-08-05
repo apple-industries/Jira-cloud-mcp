@@ -1,0 +1,28 @@
+# Quarterly theme/horizon snapshot job (_sec/snapshot.py) for beta-lab.
+# Build context = repo root (needs jira_client.py + config.py). We COPY only the
+# handful of files the job uses — NOT the whole repo — so .env, .venv, state.json,
+# and the one-off _sec exploration scripts never enter the image.
+#
+#   docker build -f Dockerfile.snapshot --platform linux/arm64 -t <ecr>:latest .
+#
+# Runtime config comes from env (JIRA_URL / JIRA_EMAIL / JIRA_API_TOKEN), injected
+# by the beta-lab task def. Default command runs the real job; pass --dry-run to
+# compute + render against live data without writing to Confluence.
+FROM python:3.12-slim
+
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1
+
+COPY requirements-snapshot.txt .
+RUN pip install --no-cache-dir -r requirements-snapshot.txt
+
+# The client + settings (repo root) and the job itself (_sec/), flattened into /app.
+COPY jira_client.py config.py ./
+COPY _sec/snapshot.py _sec/alerts.py ./
+
+# Container replacement for _sec/lib.py: the laptop version hardcodes an absolute
+# REPO_ROOT and os.chdir()es to load a local .env — here everything is in /app and
+# config reads straight from the environment, so the shim is just the client handle.
+RUN printf 'from jira_client import JiraCloudClient\nc = JiraCloudClient()\n' > lib.py
+
+CMD ["python", "snapshot.py"]

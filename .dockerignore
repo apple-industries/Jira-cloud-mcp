@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.*
+*.log
+_sec/state.json
+_sec/__pycache__
+.DS_Store
+scripts/.last_sync.json
