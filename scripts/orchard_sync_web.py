@@ -2,16 +2,22 @@
 """Beta-lab status page for the Orchard→Jira sync.
 
 A tiny, dependency-free web UI over scripts/orchard_jira_sync.py:
-  GET  /            → status page (last run, per-module counts, "Run sync now")
-  POST /run         → kick off `orchard_jira_sync.py --apply` in the background
-  GET  /api/status  → JSON (last-run file + whether a run is in progress)
+  GET  /             → status page (last run, per-module counts, "Run sync now")
+  POST /run          → kick off full `orchard_jira_sync.py --apply` in the background
+  POST /run/<module> → run ONE module synchronously, return JSON result. Token-authed via
+                       the X-Sync-Token header (machine-to-machine; e.g. the Jira
+                       "Sync Back Office Org/Operator now" manual automation). module ∈
+                       {content-codes, products, unit-product, sim-types, org-operator}.
+  GET  /api/status   → JSON (last-run file + whether a run is in progress)
 
-Intended to run locally behind the beta-lab Cloudflare Access + Entra SSO portal, so
-there is no auth here — do NOT expose it directly to the internet. Binds 127.0.0.1 by
-default (set ORCHARD_SYNC_WEB_HOST=0.0.0.0 only behind the tunnel).
+The GET page / POST /run are meant to sit behind the beta-lab Cloudflare Access + Entra
+portal (no per-user auth here). The /run/<module> route additionally requires the shared
+X-Sync-Token so automated callers are authorized even through an Access service token.
+Binds 127.0.0.1 by default (set ORCHARD_SYNC_WEB_HOST=0.0.0.0 only behind the tunnel).
 
 Run:  python3 scripts/orchard_sync_web.py         (http://127.0.0.1:8787)
-Env:  ORCHARD_SYNC_WEB_HOST, ORCHARD_SYNC_WEB_PORT, ORCHARD_SYNC_STATUS_FILE
+Env:  ORCHARD_SYNC_WEB_HOST, ORCHARD_SYNC_WEB_PORT, ORCHARD_SYNC_STATUS_FILE,
+      ORCHARD_SYNC_RUN_TOKEN (shared secret for /run/<module>)
 """
 import html
 import json
@@ -26,9 +32,28 @@ SYNC = os.path.join(HERE, "orchard_jira_sync.py")
 STATUS_FILE = os.environ.get("ORCHARD_SYNC_STATUS_FILE", os.path.join(HERE, ".last_sync.json"))
 HOST = os.environ.get("ORCHARD_SYNC_WEB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("ORCHARD_SYNC_WEB_PORT", "8787"))
+# Shared secret required on the machine-to-machine /run/<module> route (e.g. the Jira
+# "Sync now" automation). If unset, the route is open (local dev only). Set in prod.
+RUN_TOKEN = os.environ.get("ORCHARD_SYNC_RUN_TOKEN", "")
+ALLOWED_MODULES = {"content-codes", "products", "unit-product", "sim-types", "org-operator"}
 
 _state = {"running": False, "started_at": None, "output": ""}
 _lock = threading.Lock()
+
+
+def _run_module(module: str) -> dict:
+    """Run a single sync module synchronously; return a compact result for the caller
+    (e.g. the Jira automation's web-request, so its comment can report the outcome)."""
+    try:
+        proc = subprocess.run([sys.executable, SYNC, "--only", module, "--apply"],
+                              capture_output=True, text=True, timeout=180)
+        out = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        tail = "\n".join(out.splitlines()[-6:])
+        return {"module": module, "ok": proc.returncode == 0, "returncode": proc.returncode,
+                "summary": tail}
+    except Exception as e:  # noqa: BLE001
+        return {"module": module, "ok": False, "returncode": -1,
+                "summary": f"run failed: {type(e).__name__}: {e}"}
 
 
 def _run_sync():
@@ -132,6 +157,19 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Location", "/")
             self.end_headers()
             return
+        # Machine-to-machine: POST /run/<module> runs one module synchronously and returns
+        # JSON (used by the Jira "Sync now" automation so its comment reports the result).
+        if self.path.startswith("/run/"):
+            module = self.path[len("/run/"):].strip("/")
+            if RUN_TOKEN and self.headers.get("X-Sync-Token") != RUN_TOKEN:
+                return self._send(401, b'{"error":"unauthorized"}', "application/json")
+            if module not in ALLOWED_MODULES:
+                return self._send(
+                    404, json.dumps({"error": "unknown module", "allowed": sorted(ALLOWED_MODULES)}).encode(),
+                    "application/json")
+            result = _run_module(module)
+            return self._send(200 if result["ok"] else 502,
+                              json.dumps(result).encode(), "application/json")
         self._send(404, b"not found", "text/plain")
 
     def log_message(self, *a):  # quiet

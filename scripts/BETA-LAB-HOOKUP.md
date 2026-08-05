@@ -100,6 +100,31 @@ Keep the nightly on the Mac; make the EC2 page **read-only** (remove/disable `PO
 Mac push `.last_sync.json` to S3 for the page to read. This is strictly worse (page can't trigger a
 run, split infra) — prefer fixing EC2→RDS networking so the sync can live on EC2.
 
+## Manual "Sync now" endpoint (for the Jira on-demand sync action)
+
+`orchard_sync_web.py` also exposes a **machine-to-machine** route used by a Jira manual
+automation ("Sync Back Office Org/Operator from Orchard", available on EPRO Unit Setup +
+CUSTSVC Software Setup) to beat the nightly cron when someone just created an org/operator
+in Back Office:
+
+- **`POST /run/<module>`** — runs ONE sync module synchronously and returns JSON. Modules:
+  `content-codes | products | unit-product | sim-types | org-operator`. The Jira rule calls
+  `/run/org-operator`.
+- **Auth:** requires header `X-Sync-Token: <ORCHARD_SYNC_RUN_TOKEN>` (set that env from SSM;
+  it's the shared secret between Jira and the service). Returns 401 without it.
+
+To let the Jira automation reach it **through Cloudflare Access**, create an Access
+**service token** and allow it on the app's Access policy; the Jira rule sends
+`CF-Access-Client-Id` / `CF-Access-Client-Secret` headers (plus `X-Sync-Token`).
+
+**Wire up the Jira rule** (source: `jira-infrastructure/authored/automations/sync-backoffice-org-operator-manual.json`):
+fill the `<<SYNC_ENDPOINT_URL>>` (the hostname's base, e.g. `https://orchard-sync.<beta-domain>`),
+`<<ORCHARD_SYNC_RUN_TOKEN>>`, `<<CF_ACCESS_CLIENT_ID>>`, `<<CF_ACCESS_CLIENT_SECRET>>`, then
+create it DISABLED via the jira-cloud MCP `create_automation_rule`, round-trip, and enable.
+Test: run it from a Unit Setup / Software Setup → expect a comment with the sync counts, then
+the new org/operator appears in the Back Office Org/Operator dropdown. (The other modules can
+get their own manual rules later the same way, pointing at `/run/products` etc.)
+
 ## Cross-references
 - Sync: `jira-cloud-mcp/scripts/orchard_jira_sync.py` · Page: `orchard_sync_web.py`
 - Assets id-map: `jira-infrastructure/authored/assets/orch-schema.json`
