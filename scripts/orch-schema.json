@@ -1,0 +1,29 @@
+{
+  "_note": "ID map for the Assets 'Orchard Reference Data' schema (key ORCH). Created live 2026-07-29. The orchard_jira_sync job upserts objects by 'Orchard ID'. Do not edit objects by hand.",
+  "workspaceId": "54312ac0-661d-4578-ab7f-81c799c73010",
+  "schema": { "id": "36", "key": "ORCH", "name": "Orchard Reference Data" },
+  "objectTypes": {
+    "contentCode": {
+      "id": "51",
+      "orchardSource": "platform.content_code",
+      "attributes": {
+        "Name": "173",
+        "Code": "174",
+        "Licensed": "175",
+        "Experience Type": "176",
+        "Orchard ID": "177"
+      }
+    },
+    "product": {
+      "id": "50",
+      "orchardSource": "unit.product",
+      "attributes": {
+        "Name": "169",
+        "Code": "178",
+        "Orchard ID": "179",
+        "Default Content Code": "180"
+      }
+    }
+  },
+  "referenceType": { "id": "4", "name": "Reference" }
+}
