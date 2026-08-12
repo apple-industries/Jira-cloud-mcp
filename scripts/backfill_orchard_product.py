@@ -2,12 +2,14 @@
 """Backfill the EPRO Unit Setup "Orchard Product" Assets field (customfield_12249) from the
 serial number's product code, so PI-167's asset-driven import works on existing units.
 
-Matching: the serial encodes the product as its SUFFIX (e.g. ...MBP, ...DLX). Orchard product
-codes are 2-4 chars (MB=2, most=3, UNKN=4), so we match the Product whose Code the serial
-ENDS WITH, preferring the longest match. Serials that match no product are reported, not guessed.
+Matching (PI-178 interim bridge): PRIMARY = map the human-set "Photo Booth Product" (cf10065)
+to a product code via PBP_MAP (authoritative, set at order time, available before the serial).
+FALLBACK = the serial's product SUFFIX (Product whose Code the serial ENDS WITH, longest match).
+Preferring Photo Booth Product also corrects units whose serial product-code was mistyped
+(logged as MISMATCH). Units matching neither are reported, not guessed.
 
-Targets: open EPRO Unit Setups (statusCategory != Done) with a Serial Number set and the
-Orchard Product field empty.
+Targets: open EPRO Unit Setups (statusCategory != Done) with the Orchard Product field empty
+and either a Serial Number or a Photo Booth Product set.
 
 Env (jira-cloud-mcp/.env): JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, ASSETS_WORKSPACE_ID.
 
@@ -42,7 +44,29 @@ HDRS = {"Authorization": f"Basic {AUTH}", "Content-Type": "application/json", "A
 
 PROD_OT = "50"          # Product object type id (see orch-schema.json)
 PROD_CODE_ATTR = "178"  # Product.Code attribute id
-CF = "customfield_12249"
+CF = "customfield_12249"   # Orchard Product (Assets object)
+PBP = "customfield_10065"  # legacy "Photo Booth Product" select
+
+# Interim bridge (PI-178): derive Orchard Product from the human-set "Photo Booth Product"
+# (authoritative, set at order time), preferring it over the serial suffix. The legacy field
+# conflates product + content; here we map only the PRODUCT half (content overrides — MLB /
+# NASCAR / NHL — are handled by the PI-178 Content Code field, not this bridge).
+# Deliberately OMITTED (fall back to serial / stay unmatched, per PI-178 review):
+#   - Game, Other            : CS-only / no Orchard product (Game runs for operator games).
+#   - Magazine Me, Movie Scene Photo Booth : legacy options being removed from the field.
+#   - Marvel Outdoor         : should be a NEW "MOD" product — create it in Orchard first, then map.
+PBP_MAP = {
+    "Card Creator": "PMC", "Deluxe": "DLX", "Disney Card Creator": "DMC",
+    "Marvel Adventure Lab": "MAL",
+    "MLB": "PHO", "MLB - PHOTOMA": "PHO", "MLB- Deluxe": "DLX", "MLB- Theme Park": "THM",
+    "Movie Booth (PHOTOMA)": "MBP", "NASCAR - PHOTOMA": "PHO",
+    "Photo Studio": "PSD", "Photo Studio Deluxe": "PSD", "Photo Studio Prism": "PSP",
+    "Photo2Go": "P2G", "PHOTOMA": "PHO", "PHOTOMA - NHL": "PHO", "PHOTOMA Mini": "PHM",
+    "PHOTOMA Mini - Card": "PMC", "PHOTOMA Outdoor": "PHO", "Pix Place": "PIX",
+    "Royale": "ROY", "Ruby": "RBY", "Sapphire": "SAP", "Scene Machine": "SMM",
+    "Star Wars Galactic ID": "GID", "The Disney Photo Booth": "DIS", "Theme Park": "THM",
+    "Wedding Booth": "WED",
+}
 
 
 def _req(method, url, body=None):
@@ -89,11 +113,11 @@ def find_targets(one: str | None) -> list[dict]:
         jql = f'key = {one}'
     else:
         jql = ('project = EPRO AND issuetype = "Unit Setup" AND statusCategory != Done '
-               f'AND "Serial Number" is not EMPTY AND cf[12249] is EMPTY')
+               'AND cf[12249] is EMPTY AND ("Serial Number" is not EMPTY OR cf[10065] is not EMPTY)')
     out, token = [], None
     while True:
         body = {"jql": jql, "maxResults": 100,
-                "fields": ["customfield_10068", CF, "summary"]}
+                "fields": ["customfield_10068", PBP, CF, "summary"]}
         if token:
             body["nextPageToken"] = token
         d = _req("POST", f"{JU}/rest/api/3/search/jql", body)
@@ -122,21 +146,30 @@ def main() -> int:
             skipped += 1
             continue
         serial = (f.get("customfield_10068") or "").strip()
-        code = match_code(serial, list(codes))
+        pbp_raw = f.get(PBP)
+        pbp = pbp_raw.get("value") if isinstance(pbp_raw, dict) else None
+        code_pbp = PBP_MAP.get(pbp)
+        code_serial = match_code(serial, list(codes))
+        code = code_pbp or code_serial
+        src = "PhotoBoothProduct" if code_pbp else "serial"
+        if code_pbp and code_serial and code_pbp != code_serial:
+            print(f"  MISMATCH {key}: Photo Booth Product {pbp!r}->{code_pbp} but serial {serial!r}->{code_serial} "
+                  f"(using {code_pbp} — serial code may be mistyped)", file=sys.stderr)
         if not code:
             unmatched += 1
-            print(f"  UNMATCHED {key}: serial={serial!r} (no product code is a suffix)", file=sys.stderr)
+            print(f"  UNMATCHED {key}: photoBoothProduct={pbp!r} serial={serial!r} (no product match)", file=sys.stderr)
             continue
         matched += 1
         obj_id = codes[code]
+        via = f"[{src}] {pbp or serial}"
         if args.apply:
             # cmdb-object-cf write wants the Assets globalId (workspaceId:objectId), not bare id
             _req("PUT", f"{JU}/rest/api/3/issue/{key}",
                  {"fields": {CF: [{"id": f"{WS}:{obj_id}"}]}})
             wrote += 1
-            print(f"  SET {key}: {serial} -> {code} (obj {obj_id})", file=sys.stderr)
+            print(f"  SET {key}: {via} -> {code} (obj {obj_id})", file=sys.stderr)
         else:
-            print(f"  would set {key}: {serial} -> {code} (obj {obj_id})", file=sys.stderr)
+            print(f"  would set {key}: {via} -> {code} (obj {obj_id})", file=sys.stderr)
     print(f"\nmatched={matched} unmatched={unmatched} wrote={wrote} already-set(skipped)={skipped}"
           + ("" if args.apply else "  (dry-run)"), file=sys.stderr)
     return 0
