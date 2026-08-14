@@ -1,0 +1,19 @@
+{
+  "_note": "Curated TeamViewer group crosswalk for PI-177 / OPS-30. Labels are the Jira 'TeamViewer Group' field options; ids are the EXACT TeamViewer group ids. We map by id, never by live name search, because the TV account has duplicate group names (two 'Newly Registered', etc.) and trailing-space names. Regenerate from GET /api/v1/groups if the APB taxonomy changes. Non-APB product groups are intentionally omitted (those units stay in Newly Registered — CS-only).",
+  "default_label": "Newly Registered",
+  "label_to_group_id": {
+    "Newly Registered": "g196077802",
+    "APB - To Route": "g371213835",
+    "APB UK": "g272135955",
+    "APB-EAST": "g172144605",
+    "APB-WEST": "g172144616",
+    "APB MLB": "g168312684",
+    "APB-WDW": "g172144672",
+    "APB-MARVEL": "g172144618",
+    "APB-PSD": "g163533139",
+    "APB SEASONAL": "g168312720",
+    "APB Tanger Outlets": "g197408861",
+    "APB-OUT OF SERVICE": "g199544452",
+    "NY Metro Route": "g168517236"
+  }
+}

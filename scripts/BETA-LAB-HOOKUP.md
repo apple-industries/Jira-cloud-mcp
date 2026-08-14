@@ -125,6 +125,23 @@ Test: run it from a Unit Setup / Software Setup → expect a comment with the sy
 the new org/operator appears in the Back Office Org/Operator dropdown. (The other modules can
 get their own manual rules later the same way, pointing at `/run/products` etc.)
 
+### PI-177: `/teamviewer/assign` endpoint (TeamViewer alias/group/password)
+
+`orchard_sync_web.py` also exposes **`POST /teamviewer/assign`** (token-authed via `X-Sync-Token`,
+same as `/run`). Body: `{ "hdid", "alias", "group_id" | "group_name", "apply": true }`. It calls
+`teamviewer_assign.py` → finds the **unassigned** C&C device by HDID (alias+description match,
+unique-or-error) → PUTs `{alias, groupid, password}`. Works on unassigned devices (C&C-entry props,
+no managed-device cost). Secrets from SSM, never in the Jira rule:
+`TEAMVIEWER_API_TOKEN` (personal user **script** token — C&C view+edit + Group view) and
+`TEAMVIEWER_SHARED_PASSWORD` (the shared unattended password saved client-side).
+
+Wire the Jira manual rule `jira-infrastructure/authored/automations/assign-teamviewer-group.json`
+the same way as the sync-now rule: fill `<<SYNC_ENDPOINT_URL>>`, `<<ORCHARD_SYNC_RUN_TOKEN>>`,
+`<<CF_ACCESS_CLIENT_ID>>`, `<<CF_ACCESS_CLIENT_SECRET>>`, create it DISABLED via the jira-cloud MCP
+`create_automation_rule`, round-trip, then enable. **Prereq:** the synced **"TeamViewer Group"**
+field on the EPRO Unit Setup (OPS-30) — the rule reads it as the target group. Test on a real Unit
+Setup → expect a comment with the assign result, and the device renamed + moved in TeamViewer.
+
 ## Cross-references
 - Sync: `jira-cloud-mcp/scripts/orchard_jira_sync.py` · Page: `orchard_sync_web.py`
 - Assets id-map: `jira-infrastructure/authored/assets/orch-schema.json`

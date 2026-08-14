@@ -157,6 +157,28 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Location", "/")
             self.end_headers()
             return
+        # Machine-to-machine: POST /teamviewer/assign — set a booth's TeamViewer C&C
+        # alias/group/password by HDID (PI-177 manual Jira action). Token-authed.
+        if self.path == "/teamviewer/assign":
+            if RUN_TOKEN and self.headers.get("X-Sync-Token") != RUN_TOKEN:
+                return self._send(401, b'{"error":"unauthorized"}', "application/json")
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                req = json.loads((self.rfile.read(length) or b"{}").decode())
+            except Exception:
+                return self._send(400, b'{"error":"bad json"}', "application/json")
+            import teamviewer_assign as tv
+            try:
+                res = tv.assign(
+                    hdid=req.get("hdid"), alias=req.get("alias"),
+                    group_id=req.get("group_id"), group_name=req.get("group_name"),
+                    org=req.get("org"), operator=req.get("operator"),
+                    password=os.environ.get("TEAMVIEWER_SHARED_PASSWORD") or req.get("password"),
+                    apply=bool(req.get("apply", True)))
+                return self._send(200, json.dumps({"ok": True, **res}).encode(), "application/json")
+            except tv.TVError as e:
+                return self._send(502, json.dumps({"ok": False, "error": str(e)}).encode(),
+                                  "application/json")
         # Machine-to-machine: POST /run/<module> runs one module synchronously and returns
         # JSON (used by the Jira "Sync now" automation so its comment reports the result).
         if self.path.startswith("/run/"):
