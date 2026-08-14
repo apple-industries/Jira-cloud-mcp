@@ -137,6 +137,10 @@ def assign(hdid, alias=None, group_id=None, group_name=None, org=None, operator=
     explicit group_id > group_name (the Jira 'TeamViewer Group' override field) >
     computed default from org/operator. Returns a compact result (password masked).
     apply=False => dry run (no write)."""
+    # A4J renders an empty select as "" (and occasionally "null"); treat those as unset so
+    # a blank 'TeamViewer Group' field falls through to the computed default.
+    if isinstance(group_name, str) and group_name.strip().lower() in ("", "null", "none"):
+        group_name = None
     computed = None
     if not group_id and not group_name and (org or operator):
         computed = default_group_label(org, operator)
