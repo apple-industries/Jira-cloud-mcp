@@ -162,8 +162,10 @@ def assign(hdid, alias=None, group_id=None, group_name=None, org=None, operator=
         "teamviewer_id": dev.get("teamviewer_id"),
         "matched_alias": dev.get("alias"),
         "from_group": dev.get("groupid"),
-        "group_label": group_name,
-        "group_source": "computed-default" if computed else "field/explicit",
+        "group_label": group_name or group_id or "(unchanged)",
+        "group_source": ("computed-default" if computed
+                         else "field/explicit" if (group_id or group_name)
+                         else "none — no group given and org/operator empty, group left as-is"),
         "changes": {k: ("***" if k == "password" else v) for k, v in payload.items()},
         "applied": False,
     }
