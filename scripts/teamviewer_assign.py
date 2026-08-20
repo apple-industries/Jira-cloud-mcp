@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """PI-177 helper: set a booth's TeamViewer Computers & Contacts entry — alias, group,
-and the saved (client-side) unattended password — matched by HDID.
+and the saved (client-side) unattended password — matched by HDID, then serial.
 
 Works on UNASSIGNED devices (these are C&C-entry properties; no managed-device cost).
 The classic TeamViewer API has no server-side HDID filter, so we fetch /devices once and
 match the HDID against each entry's alias + description (normalized). A UNIQUE match is
-required — 0 or >1 matches is an error (never guess which booth).
+required — 0 or >1 matches is an error (never guess which booth). Falls back to the
+HDID with trailing zero-groups stripped, then the unit SERIAL, which TeamViewer aliases
+usually embed.
 
 Env:
   TEAMVIEWER_API_TOKEN        personal user script token (C&C view+edit, Group view)
@@ -72,29 +74,44 @@ def list_devices():
     return body.get("devices", [])
 
 
-def find_by_hdid(devices, hdid):
-    key = _norm(hdid)
-    if len(key) < 4:
-        raise TVError(f"HDID '{hdid}' too short/empty to match safely")
-    hits = [d for d in devices
-            if key in _norm(d.get("alias")) or key in _norm(d.get("description"))]
-    uniq = list({d["device_id"]: d for d in hits}.values())
-    if not uniq:
-        raise TVError(f"no TeamViewer device matches HDID '{hdid}'")
-    if len(uniq) > 1:
-        raise TVError("HDID '%s' matched %d devices: %s" % (
-            hdid, len(uniq), ", ".join(f"{d['device_id']}({d.get('alias')})" for d in uniq)))
-    return uniq[0]
+def _core(hdid):
+    """HDID with trailing all-zero groups dropped:
+    7C35_4852_85F7_76AB_0000_0000_0000_0000 -> 7C35485285F776AB.
+    Some TeamViewer entries carry the unpadded form."""
+    groups = [g for g in re.split(r"[^A-Za-z0-9]+", hdid or "") if g]
+    while groups and set(groups[-1]) == {"0"}:
+        groups.pop()
+    return _norm("".join(groups))
 
 
-def _load_crosswalk():
-    """Curated {label -> group_id} map (teamviewer_groups.json, sibling file). Authoritative,
-    dedup-safe: the TV account has duplicate group names, so we never resolve by live name."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teamviewer_groups.json")
-    try:
-        return json.load(open(path)).get("label_to_group_id", {})
-    except Exception:
-        return {}
+def find_device(devices, hdid, serial=None):
+    """Locate the unit's C&C entry. Tries, in order: the full HDID, the HDID with
+    trailing zero-groups stripped, then the SERIAL NUMBER (TeamViewer aliases usually
+    embed it, e.g. 'Epro-4333/082600002MBP'). Unique-or-error at every step — we never
+    guess which booth. Returns (device, how_it_matched)."""
+    attempts, tried = [("HDID", _norm(hdid)), ("HDID-core", _core(hdid)), ("serial", _norm(serial))], []
+    seen_keys = set()
+    for label, key in attempts:
+        if not key or len(key) < 6 or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        hits = [d for d in devices
+                if key in _norm(d.get("alias")) or key in _norm(d.get("description"))]
+        uniq = list({d["device_id"]: d for d in hits}.values())
+        tried.append(f"{label} '{key}' -> {len(uniq)}")
+        if len(uniq) == 1:
+            return uniq[0], label
+        if len(uniq) > 1:
+            raise TVError(
+                f"ambiguous: {label} '{key}' matched {len(uniq)} TeamViewer devices "
+                + ", ".join(f"{d['device_id']}({d.get('alias')!r})" for d in uniq)
+                + ". Remove the duplicate C&C entry in TeamViewer, then re-run.")
+    raise TVError(
+        "no TeamViewer device found for this unit (tried " + "; ".join(tried) + "). "
+        "Check that (a) the booth has come online in TeamViewer at least once, and "
+        "(b) its TeamViewer alias or description contains either the Hard Drive ID (HDID) "
+        "from this ticket or the unit serial number. A tech can paste the HDID into the "
+        "device's description in TeamViewer, then re-run this action.")
 
 
 def resolve_group_id(group_id, group_name):
@@ -132,7 +149,7 @@ def default_group_label(org, operator):
 
 
 def assign(hdid, alias=None, group_id=None, group_name=None, org=None, operator=None,
-           password=None, apply=False):
+           serial=None, password=None, apply=False):
     """Find the device by HDID and set alias/group/password. Group precedence:
     explicit group_id > group_name (the Jira 'TeamViewer Group' override field) >
     computed default from org/operator. Returns a compact result (password masked).
@@ -146,7 +163,7 @@ def assign(hdid, alias=None, group_id=None, group_name=None, org=None, operator=
         computed = default_group_label(org, operator)
         group_name = computed
     devices = list_devices()
-    dev = find_by_hdid(devices, hdid)
+    dev, matched_by = find_device(devices, hdid, serial)
     gid = resolve_group_id(group_id, group_name)
     payload = {}
     if alias:
@@ -161,6 +178,7 @@ def assign(hdid, alias=None, group_id=None, group_name=None, org=None, operator=
         "device_id": dev["device_id"],
         "teamviewer_id": dev.get("teamviewer_id"),
         "matched_alias": dev.get("alias"),
+        "matched_by": matched_by,
         "from_group": dev.get("groupid"),
         "group_label": group_name or group_id or "(unchanged)",
         "group_source": ("computed-default" if computed
@@ -186,13 +204,14 @@ def _main(argv):
     p.add_argument("--group-name")
     p.add_argument("--org", help="Back Office org (for computed default when no group given)")
     p.add_argument("--operator", help="Back Office operator (for computed default)")
+    p.add_argument("--serial", help="unit serial number (fallback match when HDID misses)")
     p.add_argument("--password", help="or set TEAMVIEWER_SHARED_PASSWORD")
     p.add_argument("--apply", action="store_true", help="write (default is dry-run)")
     a = p.parse_args(argv)
     pw = a.password or os.environ.get("TEAMVIEWER_SHARED_PASSWORD") or None
     try:
         res = assign(hdid=a.hdid, alias=a.alias, group_id=a.group_id, group_name=a.group_name,
-                     org=a.org, operator=a.operator, password=pw, apply=a.apply)
+                     org=a.org, operator=a.operator, serial=a.serial, password=pw, apply=a.apply)
     except TVError as e:
         print(json.dumps({"ok": False, "error": str(e)}, indent=2))
         return 2
