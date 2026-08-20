@@ -114,6 +114,16 @@ def find_device(devices, hdid, serial=None):
         "device's description in TeamViewer, then re-run this action.")
 
 
+def _load_crosswalk():
+    """Curated {label -> group_id} map (teamviewer_groups.json, sibling file). Authoritative,
+    dedup-safe: the TV account has duplicate group names, so we never resolve by live name."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "teamviewer_groups.json")
+    try:
+        return json.load(open(path)).get("label_to_group_id", {})
+    except Exception:
+        return {}
+
+
 def resolve_group_id(group_id, group_name):
     if group_id:
         return group_id
