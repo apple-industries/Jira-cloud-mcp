@@ -77,6 +77,60 @@ def api(token, method, path, body=None):
             return e.code, {"raw": raw[:300]}
 
 
+
+def ci(d, *names):
+    """Case-insensitive key lookup — TeamViewer returns 'Roles'/'Name'/'Id' (capitalised)
+    from /userroles but lowercase keys elsewhere."""
+    if not isinstance(d, dict):
+        return None
+    low = {k.lower(): v for k, v in d.items()}
+    for n in names:
+        if n.lower() in low:
+            return low[n.lower()]
+    return None
+
+
+def role_name(r):
+    return ci(r, "Name", "roleName") or "?"
+
+
+def role_id(r):
+    return ci(r, "Id", "userRoleId", "roleId")
+
+
+def perm_summary(r, limit=6):
+    """Compact 'what does this role actually allow' line."""
+    perms = ci(r, "Permissions") or {}
+    on = [k for k, v in perms.items() if v is True]
+    if not on:
+        return "(no permissions enabled)"
+    return f"{len(on)} enabled: " + ", ".join(on[:limit]) + (" …" if len(on) > limit else "")
+
+
+def find_user_role(api_fn, token, email, roles):
+    """Best-effort: which role is this user assigned? Tries the user record first, then
+    each role's account list. Returns (role_id, role_name, how) or (None, None, why)."""
+    s, u = api_fn(token, "GET", f"/users?email={email}")
+    stub = (u.get("users") or [None])[0]
+    if not stub:
+        return None, None, f"user {email} not found"
+    s, det = api_fn(token, "GET", f"/users/{stub['id']}")
+    for k, v in (det or {}).items():
+        if "role" in k.lower() and v:
+            match = next((r for r in roles if str(role_id(r)) == str(v)), None)
+            return str(v), (role_name(match) if match else "(unknown)"), f"user record field {k!r}"
+    for r in roles:
+        rid = role_id(r)
+        s, acc = api_fn(token, "GET", f"/userroles/{rid}/accounts")
+        if s != 200:
+            continue
+        ids = json.dumps(acc)
+        if stub["id"] in ids or email.lower() in ids.lower():
+            return rid, role_name(r), "role account list"
+    return None, None, ("could not determine the role from the API "
+                        f"(user {stub['id']} not found in any role's account list)")
+
+
 def main(argv):
     p = argparse.ArgumentParser(description="Create TeamViewer users from a reference user's permissions")
     p.add_argument("--apply", action="store_true", help="actually create (default: dry run)")
@@ -87,6 +141,8 @@ def main(argv):
     p.add_argument("--role", help="user role NAME to assign (see --list-roles)")
     p.add_argument("--role-id", help="user role ID to assign (overrides --role)")
     p.add_argument("--list-roles", action="store_true", help="list available user roles and exit")
+    p.add_argument("--copy-role-from", metavar="EMAIL",
+                   help="assign whatever role this existing user has (e.g. jonathanmccool@faceplacephoto.com)")
     a = p.parse_args(argv)
 
     prov = load_env(PROV_ENV)
@@ -121,38 +177,48 @@ def main(argv):
     # so creation now needs a user ROLE. Roles live at GET /userroles (needs a user-
     # management scope, which is why this uses the provisioning token, not api.env's).
     s, roles_body = api(token, "GET", "/userroles")
-    roles = roles_body.get("roles") or roles_body.get("userRoles") or []
+    roles = ci(roles_body, "Roles", "userRoles") or []
     if s != 200:
         print(f"ERROR: GET /userroles failed: HTTP {s} {roles_body}\n"
               "  The provisioning token needs a user-management scope that can read roles.")
         return 1
 
-    def role_label(r):
-        return r.get("name") or r.get("roleName") or "?"
-
-    def role_ident(r):
-        return r.get("id") or r.get("userRoleId") or r.get("roleId")
+    if a.copy_role_from and not (a.role or a.role_id):
+        rid, rname, how = find_user_role(api, token, a.copy_role_from, roles)
+        if not rid:
+            print(f"ERROR: {how}\n  Pick one explicitly with --role/--role-id (see --list-roles).")
+            return 1
+        print(f"copying role from {a.copy_role_from}: {rname} [{rid}]  (via {how})")
+        a.role_id = rid
 
     if a.list_roles or not (a.role or a.role_id):
+        if not roles:
+            print("No roles parsed. Raw GET /userroles response:")
+            print("  " + json.dumps(roles_body)[:1500])
+            print("\nIf that payload is genuinely empty, no user roles are defined in the tenant "
+                  "yet —\ncreate one in the Management Console (Company administration -> User "
+                  "roles), then re-run.")
+            return 1
         print(f"available user roles ({len(roles)}):")
         for r in roles:
-            print(f"  {str(role_ident(r)):<40} {role_label(r)}")
+            print(f"  {str(role_id(r)):<38} {role_name(r)}")
+            print(f"  {'':<38} {perm_summary(r)}")
         if a.list_roles:
             return 0
         print("\nERROR: pick one with --role \"<name>\" (or --role-id <id>) and re-run.")
         return 1
 
     if a.role_id:
-        role_id, role_name = a.role_id, next((role_label(r) for r in roles
-                                              if str(role_ident(r)) == a.role_id), "(unknown)")
+        role_id, role_name = a.role_id, next((role_name(r) for r in roles
+                                              if str(role_id(r)) == a.role_id), "(unknown)")
     else:
-        matches = [r for r in roles if role_label(r).strip().lower() == a.role.strip().lower()]
+        matches = [r for r in roles if role_name(r).strip().lower() == a.role.strip().lower()]
         if len(matches) != 1:
             print(f"ERROR: --role {a.role!r} matched {len(matches)} roles. Available:")
             for r in roles:
-                print(f"  {role_label(r)}")
+                print(f"  {role_name(r)}")
             return 1
-        role_id, role_name = role_ident(matches[0]), role_label(matches[0])
+        role_id, role_name = role_id(matches[0]), role_name(matches[0])
 
     # reference user is now informational only (its legacy permissions can't be assigned)
     s, u = api(token, "GET", f"/users?email={a.ref_user}")
