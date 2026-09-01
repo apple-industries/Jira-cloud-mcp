@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Create TeamViewer user accounts for new staff, copying an existing user's permissions.
+"""Create TeamViewer user accounts for new staff, assigning a user ROLE.
+
+TeamViewer deprecated the legacy "permissions" string on POST /users — creation now
+requires userRoleId. Run with --list-roles to see what is available.
 
 Uses a DEDICATED provisioning token, deliberately separate from the automation token:
 
@@ -16,8 +19,9 @@ This script refuses to run if the two tokens are the same value, so the separati
 can't silently collapse.
 
 Dry run by default:
-  python3 teamviewer_create_users.py
-  python3 teamviewer_create_users.py --apply
+  python3 teamviewer_create_users.py --list-roles
+  python3 teamviewer_create_users.py --role "Tech support"
+  python3 teamviewer_create_users.py --role "Tech support" --apply
   python3 teamviewer_create_users.py --ref-user jimalbert@faceplacephoto.com --apply
   python3 teamviewer_create_users.py --user "TECH SUPXY:someone@appleindustries.com" --apply
 
@@ -80,6 +84,9 @@ def main(argv):
     p.add_argument("--user", action="append", metavar="NAME:EMAIL",
                    help="user to create; repeatable. Defaults to the two new UK support reps.")
     p.add_argument("--password", help="temp password (default: TEAMVIEWER_NEW_USER_PASSWORD from provisioning.env)")
+    p.add_argument("--role", help="user role NAME to assign (see --list-roles)")
+    p.add_argument("--role-id", help="user role ID to assign (overrides --role)")
+    p.add_argument("--list-roles", action="store_true", help="list available user roles and exit")
     a = p.parse_args(argv)
 
     prov = load_env(PROV_ENV)
@@ -109,21 +116,52 @@ def main(argv):
         users.append((name.strip(), email.strip()))
     users = users or DEFAULT_USERS
 
-    # ?email= returns only {id,name,email} — the full record (incl. permissions) needs /users/{id}
-    s, u = api(token, "GET", f"/users?email={a.ref_user}")
+    # TeamViewer deprecated the legacy "permissions" string on POST /users:
+    #   "Legacy permissions are deprecated, please use the userRoleId parameter"
+    # so creation now needs a user ROLE. Roles live at GET /userroles (needs a user-
+    # management scope, which is why this uses the provisioning token, not api.env's).
+    s, roles_body = api(token, "GET", "/userroles")
+    roles = roles_body.get("roles") or roles_body.get("userRoles") or []
     if s != 200:
-        print(f"ERROR: lookup of reference user failed: HTTP {s} {u}"); return 1
-    stub = (u.get("users") or [None])[0]
-    if not stub:
-        print(f"ERROR: reference user {a.ref_user} not found"); return 1
-    s, ref = api(token, "GET", f"/users/{stub['id']}")
-    if s != 200:
-        print(f"ERROR: fetching reference user detail failed: HTTP {s} {ref}"); return 1
-    perms = ref.get("permissions")
+        print(f"ERROR: GET /userroles failed: HTTP {s} {roles_body}\n"
+              "  The provisioning token needs a user-management scope that can read roles.")
+        return 1
 
-    print(f"reference : {ref['name']} <{a.ref_user}>")
-    print(f"  permissions -> {perms!r}")
-    print(f"  license     -> {ref.get('activated_license_name')} / {ref.get('activated_subLicense_name')}")
+    def role_label(r):
+        return r.get("name") or r.get("roleName") or "?"
+
+    def role_ident(r):
+        return r.get("id") or r.get("userRoleId") or r.get("roleId")
+
+    if a.list_roles or not (a.role or a.role_id):
+        print(f"available user roles ({len(roles)}):")
+        for r in roles:
+            print(f"  {str(role_ident(r)):<40} {role_label(r)}")
+        if a.list_roles:
+            return 0
+        print("\nERROR: pick one with --role \"<name>\" (or --role-id <id>) and re-run.")
+        return 1
+
+    if a.role_id:
+        role_id, role_name = a.role_id, next((role_label(r) for r in roles
+                                              if str(role_ident(r)) == a.role_id), "(unknown)")
+    else:
+        matches = [r for r in roles if role_label(r).strip().lower() == a.role.strip().lower()]
+        if len(matches) != 1:
+            print(f"ERROR: --role {a.role!r} matched {len(matches)} roles. Available:")
+            for r in roles:
+                print(f"  {role_label(r)}")
+            return 1
+        role_id, role_name = role_ident(matches[0]), role_label(matches[0])
+
+    # reference user is now informational only (its legacy permissions can't be assigned)
+    s, u = api(token, "GET", f"/users?email={a.ref_user}")
+    stub = (u.get("users") or [None])[0]
+    if stub:
+        s, ref = api(token, "GET", f"/users/{stub['id']}")
+        print(f"reference : {ref.get('name')} <{a.ref_user}>  (legacy perms {ref.get('permissions')!r}, "
+              f"license {ref.get('activated_license_name')} / {ref.get('activated_subLicense_name')})")
+    print(f"role      : {role_name}  [{role_id}]")
     print(f"mode      : {'APPLY' if a.apply else 'DRY RUN'}\n")
 
     created = skipped = failed = 0
@@ -134,11 +172,11 @@ def main(argv):
             skipped += 1
             continue
         if not a.apply:
-            print(f"WOULD  {name:<12} {email:<38} perms={perms!r}")
+            print(f"WOULD  {name:<12} {email:<38} role={role_name!r}")
             continue
         s, r = api(token, "POST", "/users",
                    {"email": email, "name": name, "password": password,
-                    "permissions": perms, "language": "en"})
+                    "userRoleId": role_id, "language": "en"})
         if s == 200 and r.get("id"):
             print(f"CREATE {name:<12} {email:<38} -> {r['id']}")
             created += 1
