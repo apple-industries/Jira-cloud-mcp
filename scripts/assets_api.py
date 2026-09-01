@@ -26,6 +26,9 @@ returns an unhelpful error, so they are documented rather than rediscovered:
   5. Reference values are written as the target object's numeric id (not objectKey), and
      read back under objectAttributeValues[].referencedObject.
 
+  6. AQL pages at 25 rows by default and does NOT warn — the honest count is in "total".
+     aql() below paginates; a single un-paged call made 164 people look like 25.
+
 Env: reads JIRA_EMAIL / JIRA_API_TOKEN from jira-cloud-mcp/.env
 """
 import base64
@@ -101,12 +104,23 @@ def update_object(object_id, attr_ids, **values):
     return call("PUT", f"/object/{object_id}", payload)
 
 
-def aql(query, **kw):
-    """Find objects. Returns the raw 'values' list — ids and labels only (gotcha 4)."""
-    code, body = call("POST", "/object/aql", {"qlQuery": query, **kw})
-    if code != 200:
-        raise RuntimeError(f"AQL failed: {code} {body}")
-    return body.get("values", [])
+def aql(query, page_size=100, **kw):
+    """Find every matching object — ids and labels only (gotcha 4).
+
+    PAGINATES. The API returns 25 rows by default and reports the real count in "total";
+    a naive single call silently truncates, which made 164 people look like 25.
+    """
+    out, start = [], 0
+    while True:
+        code, body = call("POST", "/object/aql",
+                          {"qlQuery": query, "startAt": start, "maxResults": page_size, **kw})
+        if code != 200:
+            raise RuntimeError(f"AQL failed: {code} {body}")
+        vals = body.get("values", [])
+        out.extend(vals)
+        if body.get("isLast") or not vals or len(out) >= body.get("total", 0):
+            return out
+        start += len(vals)
 
 
 def object_values(object_id):
