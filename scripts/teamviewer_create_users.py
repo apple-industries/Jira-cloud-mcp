@@ -208,9 +208,11 @@ def main(argv):
         print("\nERROR: pick one with --role \"<name>\" (or --role-id <id>) and re-run.")
         return 1
 
+    # NB: distinct local names — role_id()/role_name() are module-level helpers and
+    # assigning to those names here would shadow them inside main().
     if a.role_id:
-        role_id, role_name = a.role_id, next((role_name(r) for r in roles
-                                              if str(role_id(r)) == a.role_id), "(unknown)")
+        sel_id = a.role_id
+        sel_name = next((role_name(r) for r in roles if str(role_id(r)) == a.role_id), "(unknown)")
     else:
         matches = [r for r in roles if role_name(r).strip().lower() == a.role.strip().lower()]
         if len(matches) != 1:
@@ -218,7 +220,7 @@ def main(argv):
             for r in roles:
                 print(f"  {role_name(r)}")
             return 1
-        role_id, role_name = role_id(matches[0]), role_name(matches[0])
+        sel_id, sel_name = role_id(matches[0]), role_name(matches[0])
 
     # reference user is now informational only (its legacy permissions can't be assigned)
     s, u = api(token, "GET", f"/users?email={a.ref_user}")
@@ -227,7 +229,7 @@ def main(argv):
         s, ref = api(token, "GET", f"/users/{stub['id']}")
         print(f"reference : {ref.get('name')} <{a.ref_user}>  (legacy perms {ref.get('permissions')!r}, "
               f"license {ref.get('activated_license_name')} / {ref.get('activated_subLicense_name')})")
-    print(f"role      : {role_name}  [{role_id}]")
+    print(f"role      : {sel_name}  [{sel_id}]")
     print(f"mode      : {'APPLY' if a.apply else 'DRY RUN'}\n")
 
     created = skipped = failed = 0
@@ -238,11 +240,11 @@ def main(argv):
             skipped += 1
             continue
         if not a.apply:
-            print(f"WOULD  {name:<12} {email:<38} role={role_name!r}")
+            print(f"WOULD  {name:<12} {email:<38} role={sel_name!r}")
             continue
         s, r = api(token, "POST", "/users",
                    {"email": email, "name": name, "password": password,
-                    "userRoleId": role_id, "language": "en"})
+                    "userRoleId": sel_id, "language": "en"})
         if s == 200 and r.get("id"):
             print(f"CREATE {name:<12} {email:<38} -> {r['id']}")
             created += 1
