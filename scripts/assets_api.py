@@ -27,7 +27,8 @@ returns an unhelpful error, so they are documented rather than rediscovered:
      read back under objectAttributeValues[].referencedObject.
 
   6. AQL pages at 25 rows by default and does NOT warn — the honest count is in "total".
-     aql() below paginates; a single un-paged call made 164 people look like 25.
+     Paging params MUST go in the QUERY STRING (?startAt=&maxResults=); in the POST body
+     they are silently ignored and every call returns the same first page.
 
 Env: reads JIRA_EMAIL / JIRA_API_TOKEN from jira-cloud-mcp/.env
 """
@@ -104,23 +105,30 @@ def update_object(object_id, attr_ids, **values):
     return call("PUT", f"/object/{object_id}", payload)
 
 
-def aql(query, page_size=100, **kw):
+def aql(query, page_size=200, **kw):
     """Find every matching object — ids and labels only (gotcha 4).
 
-    PAGINATES. The API returns 25 rows by default and reports the real count in "total";
-    a naive single call silently truncates, which made 164 people look like 25.
+    Paginates via QUERY-STRING params. Passing startAt/maxResults in the POST BODY is
+    silently IGNORED — every call then returns the same first 25 rows, so a naive loop
+    yields duplicates rather than more data (this produced "175 people" out of 164, only
+    25 of them distinct). Verify pagination by checking for overlapping ids, never by
+    trusting the row count.
     """
-    out, start = [], 0
+    out, seen, start_at = [], set(), 0
     while True:
-        code, body = call("POST", "/object/aql",
-                          {"qlQuery": query, "startAt": start, "maxResults": page_size, **kw})
+        code, body = call("POST", f"/object/aql?startAt={start_at}&maxResults={page_size}",
+                          {"qlQuery": query, **kw})
         if code != 200:
             raise RuntimeError(f"AQL failed: {code} {body}")
         vals = body.get("values", [])
-        out.extend(vals)
-        if body.get("isLast") or not vals or len(out) >= body.get("total", 0):
+        fresh = [v for v in vals if v["id"] not in seen]
+        if not fresh:                      # defensive: server ignored our paging
             return out
-        start += len(vals)
+        seen.update(v["id"] for v in fresh)
+        out.extend(fresh)
+        if body.get("isLast") or len(out) >= body.get("total", 0):
+            return out
+        start_at += len(vals)
 
 
 def object_values(object_id):
